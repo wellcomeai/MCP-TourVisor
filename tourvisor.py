@@ -24,6 +24,92 @@ class TourVisorClient:
         params = {"type": ref_type, **kwargs}
         return await self._make_request("list.php", params)
     
+    async def find_city(self, city_name: str) -> Dict:
+        """Найти город по названию"""
+        # Получаем все города
+        all_cities = await self.get_references("departure")
+        
+        # Ищем нужный город (регистронезависимо)
+        city_name_lower = city_name.lower().strip()
+        
+        departures = all_cities.get("lists", {}).get("departures", {}).get("departure", [])
+        
+        # Поиск по точному совпадению
+        for city in departures:
+            if city.get("name", "").lower() == city_name_lower:
+                return {
+                    "found": True,
+                    "city": {
+                        "id": int(city.get("id")),
+                        "name": city.get("name"),
+                        "name_from": city.get("namefrom")
+                    }
+                }
+        
+        # Поиск по частичному совпадению
+        matches = []
+        for city in departures:
+            if city_name_lower in city.get("name", "").lower():
+                matches.append({
+                    "id": int(city.get("id")),
+                    "name": city.get("name"),
+                    "name_from": city.get("namefrom")
+                })
+        
+        if matches:
+            return {
+                "found": True,
+                "city": matches[0],  # Берем первое совпадение
+                "alternatives": matches[1:5] if len(matches) > 1 else []  # До 4 альтернатив
+            }
+        
+        return {
+            "found": False,
+            "message": f"Город '{city_name}' не найден",
+            "suggestion": "Попробуйте другое название или уточните"
+        }
+    
+    async def find_country(self, country_name: str) -> Dict:
+        """Найти страну по названию"""
+        # Получаем все страны
+        all_countries = await self.get_references("country")
+        
+        country_name_lower = country_name.lower().strip()
+        
+        countries = all_countries.get("lists", {}).get("countries", {}).get("country", [])
+        
+        # Поиск по точному совпадению
+        for country in countries:
+            if country.get("name", "").lower() == country_name_lower:
+                return {
+                    "found": True,
+                    "country": {
+                        "id": int(country.get("id")),
+                        "name": country.get("name")
+                    }
+                }
+        
+        # Поиск по частичному совпадению
+        matches = []
+        for country in countries:
+            if country_name_lower in country.get("name", "").lower():
+                matches.append({
+                    "id": int(country.get("id")),
+                    "name": country.get("name")
+                })
+        
+        if matches:
+            return {
+                "found": True,
+                "country": matches[0],
+                "alternatives": matches[1:5] if len(matches) > 1 else []
+            }
+        
+        return {
+            "found": False,
+            "message": f"Страна '{country_name}' не найдена"
+        }
+    
     async def search_tours(self, params: Dict) -> Dict:
         """Поиск туров (асинхронный)"""
         # Шаг 1: Создаем запрос
