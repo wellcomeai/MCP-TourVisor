@@ -1,8 +1,9 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Dict, Any
+import json
 from tourvisor import TourVisorClient
 from models import (
     SearchToursRequest, 
@@ -10,7 +11,6 @@ from models import (
     GetHotToursRequest,
     GetHotelInfoRequest
 )
-from pydantic import BaseModel
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -22,7 +22,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS (если нужно)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,11 +41,23 @@ if not LOGIN or not PASSWORD:
 # Клиент TourVisor
 client = TourVisorClient(LOGIN, PASSWORD)
 
-# Модель для POST запроса get_references
-class GetReferencesRequest(BaseModel):
-    ref_type: str
-    country_code: Optional[int] = None
-    departure_code: Optional[int] = None
+# ==== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ====
+
+async def extract_params(request: Request) -> Dict[str, Any]:
+    """
+    Извлекает параметры из разных форматов:
+    - JSON-RPC (ProTalk): {"jsonrpc": "2.0", "params": {"arguments": {...}}}
+    - Обычный JSON: {...}
+    """
+    body = await request.body()
+    data = json.loads(body)
+    
+    # Если JSON-RPC формат от ProTalk
+    if "params" in data and "arguments" in data["params"]:
+        return data["params"]["arguments"]
+    
+    # Если обычный JSON
+    return data
 
 # ==== ENDPOINTS ====
 
@@ -89,81 +101,136 @@ async def get_references_get(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# POST версия (для ProTalk)
+# POST версия (универсальная для ProTalk и обычных запросов)
 @app.post("/get_references")
-async def get_references_post(request: GetReferencesRequest):
+async def get_references_post(request: Request):
     """
-    Получить справочники (POST)
-    ref_type: departure, country, region, meal, stars, operator, hotel
+    Получить справочники (POST) - универсальный
     """
     try:
-        params = {}
-        if request.country_code:
-            params["regcountry"] = request.country_code
-            params["hotcountry"] = request.country_code
-        if request.departure_code:
-            params["cndep"] = request.departure_code
+        data = await extract_params(request)
         
-        result = await client.get_references(request.ref_type, **params)
+        ref_type = data.get("ref_type")
+        if not ref_type:
+            raise HTTPException(status_code=400, detail="ref_type is required")
+        
+        country_code = data.get("country_code")
+        departure_code = data.get("departure_code")
+        
+        params = {}
+        if country_code:
+            params["regcountry"] = country_code
+            params["hotcountry"] = country_code
+        if departure_code:
+            params["cndep"] = departure_code
+        
+        result = await client.get_references(ref_type, **params)
         return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search_tours")
-async def search_tours(request: SearchToursRequest):
-    """Поиск туров"""
+async def search_tours(request: Request):
+    """Поиск туров (универсальный)"""
     try:
-        # Конвертируем в dict, убираем None
-        params = {k: v for k, v in request.dict().items() if v is not None}
+        data = await extract_params(request)
+        
+        # Проверяем обязательные параметры
+        if "departure" not in data or "country" not in data:
+            raise HTTPException(
+                status_code=400, 
+                detail="departure and country are required"
+            )
+        
+        # Убираем None значения
+        params = {k: v for k, v in data.items() if v is not None}
+        
         result = await client.search_tours(params)
         return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/actualize_tour")
-async def actualize_tour(request: ActualizeTourRequest):
-    """Актуализация тура (проверка цены)"""
+async def actualize_tour(request: Request):
+    """Актуализация тура (универсальная)"""
     try:
-        result = await client.actualize_tour(
-            request.tourid,
-            request.currency
-        )
+        data = await extract_params(request)
+        
+        tourid = data.get("tourid")
+        if not tourid:
+            raise HTTPException(status_code=400, detail="tourid is required")
+        
+        currency = data.get("currency", 0)
+        
+        result = await client.actualize_tour(tourid, currency)
         return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/get_tour_details")
-async def get_tour_details(request: ActualizeTourRequest):
-    """Детальная информация о туре (перелеты, доплаты)"""
+async def get_tour_details(request: Request):
+    """Детальная информация о туре (универсальная)"""
     try:
-        result = await client.get_tour_details(
-            request.tourid,
-            request.currency
-        )
+        data = await extract_params(request)
+        
+        tourid = data.get("tourid")
+        if not tourid:
+            raise HTTPException(status_code=400, detail="tourid is required")
+        
+        currency = data.get("currency", 0)
+        
+        result = await client.get_tour_details(tourid, currency)
         return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/get_hotel_info")
-async def get_hotel_info(request: GetHotelInfoRequest):
-    """Информация об отеле"""
+async def get_hotel_info(request: Request):
+    """Информация об отеле (универсальная)"""
     try:
-        result = await client.get_hotel_info(
-            request.hotelcode,
-            request.reviews,
-            request.imgbig
-        )
+        data = await extract_params(request)
+        
+        hotelcode = data.get("hotelcode")
+        if not hotelcode:
+            raise HTTPException(status_code=400, detail="hotelcode is required")
+        
+        reviews = data.get("reviews", 0)
+        imgbig = data.get("imgbig", 1)
+        
+        result = await client.get_hotel_info(hotelcode, reviews, imgbig)
         return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/get_hot_tours")
-async def get_hot_tours(request: GetHotToursRequest):
-    """Горящие туры"""
+async def get_hot_tours(request: Request):
+    """Горящие туры (универсальные)"""
     try:
-        params = {k: v for k, v in request.dict().items() if v is not None}
+        data = await extract_params(request)
+        
+        if "city" not in data or "items" not in data:
+            raise HTTPException(
+                status_code=400, 
+                detail="city and items are required"
+            )
+        
+        # Убираем None значения
+        params = {k: v for k, v in data.items() if v is not None}
+        
         result = await client.get_hot_tours(params)
         return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
