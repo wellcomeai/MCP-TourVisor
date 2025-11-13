@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from typing import Optional
 from tourvisor import TourVisorClient
 from models import (
     SearchToursRequest, 
@@ -9,6 +10,7 @@ from models import (
     GetHotToursRequest,
     GetHotelInfoRequest
 )
+from pydantic import BaseModel
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -39,6 +41,12 @@ if not LOGIN or not PASSWORD:
 # Клиент TourVisor
 client = TourVisorClient(LOGIN, PASSWORD)
 
+# Модель для POST запроса get_references
+class GetReferencesRequest(BaseModel):
+    ref_type: str
+    country_code: Optional[int] = None
+    departure_code: Optional[int] = None
+
 # ==== ENDPOINTS ====
 
 @app.get("/")
@@ -57,14 +65,15 @@ async def root():
         ]
     }
 
+# GET версия (для curl и браузера)
 @app.get("/get_references")
-async def get_references(
+async def get_references_get(
     ref_type: str,
     country_code: int = None,
     departure_code: int = None
 ):
     """
-    Получить справочники
+    Получить справочники (GET)
     ref_type: departure, country, region, meal, stars, operator, hotel
     """
     try:
@@ -76,6 +85,26 @@ async def get_references(
             params["cndep"] = departure_code
         
         result = await client.get_references(ref_type, **params)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# POST версия (для ProTalk)
+@app.post("/get_references")
+async def get_references_post(request: GetReferencesRequest):
+    """
+    Получить справочники (POST)
+    ref_type: departure, country, region, meal, stars, operator, hotel
+    """
+    try:
+        params = {}
+        if request.country_code:
+            params["regcountry"] = request.country_code
+            params["hotcountry"] = request.country_code
+        if request.departure_code:
+            params["cndep"] = request.departure_code
+        
+        result = await client.get_references(request.ref_type, **params)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
