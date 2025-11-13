@@ -141,7 +141,8 @@ class TourVisorClient:
         if "error" in search_response:
             return {"error": search_response.get("error"), "details": search_response}
         
-        request_id = search_response.get("requestid")
+        # ✅ ИСПРАВЛЕНИЕ: API возвращает {"result": {"requestid": "..."}}
+        request_id = search_response.get("result", {}).get("requestid")
         
         if not request_id:
             return {
