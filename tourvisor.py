@@ -9,17 +9,61 @@ class TourVisorClient:
         self.base_url = "http://tourvisor.ru/xml"
         
     async def _make_request(self, endpoint: str, params: Dict[str, Any]) -> Dict:
-        """Базовый метод для запросов"""
-        # Создаем КОПИЮ params чтобы не модифицировать оригинал
+        """Базовый метод для запросов с улучшенной обработкой ошибок"""
         request_params = params.copy()
         request_params["authlogin"] = self.login
         request_params["authpass"] = self.password
         request_params["format"] = "json"
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(f"{self.base_url}/{endpoint}", params=request_params)
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.get(f"{self.base_url}/{endpoint}", params=request_params)
+                
+                # Пытаемся распарсить JSON, даже если статус не 200
+                try:
+                    data = response.json()
+                except Exception as json_error:
+                    # Если не JSON - возвращаем ошибку с текстом ответа
+                    return {
+                        "iserror": True,
+                        "errormessage": f"API вернул не JSON. Status: {response.status_code}",
+                        "response_text": response.text[:500] if response.text else "Empty response"
+                    }
+                
+                # Проверяем статус ответа
+                if response.status_code != 200:
+                    # API вернул ошибку, но это может быть валидный JSON с iserror
+                    if isinstance(data, dict) and data.get("iserror"):
+                        return data  # Возвращаем ошибку из API как есть
+                    else:
+                        return {
+                            "iserror": True,
+                            "errormessage": f"HTTP {response.status_code}",
+                            "response": data
+                        }
+                
+                # Проверяем наличие iserror в успешном ответе
+                if isinstance(data, dict) and data.get("iserror"):
+                    return data  # Возвращаем ошибку из API
+                
+                # Всё хорошо - возвращаем данные
+                return data
+                
+            except httpx.TimeoutException:
+                return {
+                    "iserror": True,
+                    "errormessage": "Таймаут запроса к TourVisor API (30 сек)"
+                }
+            except httpx.ConnectError:
+                return {
+                    "iserror": True,
+                    "errormessage": "Не удалось подключиться к TourVisor API"
+                }
+            except Exception as e:
+                return {
+                    "iserror": True,
+                    "errormessage": f"Ошибка соединения: {str(e)}"
+                }
     
     async def get_references(self, ref_type: str, **kwargs) -> Dict:
         """Получить справочники"""
@@ -29,6 +73,15 @@ class TourVisorClient:
     async def find_city(self, city_name: str) -> Dict:
         """Найти город по названию"""
         all_cities = await self.get_references("departure")
+        
+        # Проверка на ошибку
+        if all_cities.get("iserror"):
+            return {
+                "found": False,
+                "error": "api_error",
+                "message": all_cities.get("errormessage", "Ошибка получения списка городов")
+            }
+        
         city_name_lower = city_name.lower().strip()
         departures = all_cities.get("lists", {}).get("departures", {}).get("departure", [])
         
@@ -70,6 +123,15 @@ class TourVisorClient:
     async def find_country(self, country_name: str) -> Dict:
         """Найти страну по названию"""
         all_countries = await self.get_references("country")
+        
+        # Проверка на ошибку
+        if all_countries.get("iserror"):
+            return {
+                "found": False,
+                "error": "api_error",
+                "message": all_countries.get("errormessage", "Ошибка получения списка стран")
+            }
+        
         country_name_lower = country_name.lower().strip()
         countries = all_countries.get("lists", {}).get("countries", {}).get("country", [])
         
@@ -129,9 +191,21 @@ class TourVisorClient:
         
         return converted
     
-    def _flatten_tours(self, search_result: Dict) -> List[Dict]:
-        """Разворачивает туры из структуры hotels в плоский список"""
+    def _flatten_tours(self, search_result: Dict, limit: int = 10) -> List[Dict]:
+        """Разворачивает туры из структуры hotels в плоский список
+        
+        Args:
+            search_result: результат поиска от API
+            limit: максимальное количество туров (по умолчанию 10, None = все)
+        
+        Returns:
+            Список туров, отсортированный по цене
+        """
         flat_tours = []
+        
+        # Проверяем на ошибку
+        if search_result.get("iserror"):
+            return []
         
         # Проверяем наличие данных
         hotels = search_result.get("data", {}).get("result", {}).get("hotel", [])
@@ -208,7 +282,8 @@ class TourVisorClient:
         # Сортируем по цене (от дешевых к дорогим)
         flat_tours.sort(key=lambda x: float(x.get("price", 999999)))
         
-        return flat_tours
+        # 🆕 Возвращаем только ТОП-N туров
+        return flat_tours[:limit] if limit else flat_tours
     
     async def search_tours(self, params: Dict) -> Dict:
         """Поиск туров (асинхронный)"""
@@ -219,15 +294,16 @@ class TourVisorClient:
         search_response = await self._make_request("search.php", clean_params)
         
         # Проверяем на ошибки
-        if "error" in search_response:
-            return {"error": search_response.get("error"), "details": search_response}
+        if search_response.get("iserror"):
+            return search_response
         
-        # ✅ ИСПРАВЛЕНИЕ: API возвращает {"result": {"requestid": "..."}}
+        # API возвращает {"result": {"requestid": "..."}}
         request_id = search_response.get("result", {}).get("requestid")
         
         if not request_id:
             return {
-                "error": "Не получен ID запроса",
+                "iserror": True,
+                "errormessage": "Не получен ID запроса",
                 "api_response": search_response,
                 "sent_params": clean_params
             }
@@ -244,6 +320,11 @@ class TourVisorClient:
                 "type": "status"
             }
             status_response = await self._make_request("result.php", status_params)
+            
+            # Проверяем на ошибку
+            if status_response.get("iserror"):
+                return status_response
+            
             status = status_response.get("status", {})
             
             # Если завершен или прошло >7 сек
@@ -257,12 +338,22 @@ class TourVisorClient:
             "requestid": request_id,
             "type": "result",
             "page": 1,
-            "onpage": 25  # Увеличил до 25 для большего выбора
+            "onpage": 25
         }
         return await self._make_request("result.php", result_params)
     
-    async def search_tours_smart(self, city_name: str, country_name: str, params: Dict) -> Dict:
-        """Умный поиск: находит коды города и страны, затем ищет туры"""
+    async def search_tours_smart(self, city_name: str, country_name: str, params: Dict, limit: int = 10) -> Dict:
+        """Умный поиск: находит коды города и страны, затем ищет туры
+        
+        Args:
+            city_name: название города на русском
+            country_name: название страны на русском
+            params: дополнительные параметры поиска
+            limit: максимальное количество туров в выдаче (по умолчанию 10)
+        
+        Returns:
+            Словарь с результатами поиска
+        """
         # Шаг 1: Находим город
         city_result = await self.find_city(city_name)
         if not city_result.get("found"):
@@ -295,8 +386,19 @@ class TourVisorClient:
         # Шаг 4: Ищем туры
         tours_result = await self.search_tours(search_params)
         
-        # Шаг 5: Разворачиваем туры из отелей в плоский список
-        flat_tours = self._flatten_tours(tours_result)
+        # Проверяем на ошибку
+        if tours_result.get("iserror"):
+            return {
+                "success": False,
+                "error": "search_failed",
+                "city": city_result["city"],
+                "country": country_result["country"],
+                "search_params": search_params,
+                "error_details": tours_result
+            }
+        
+        # Шаг 5: Разворачиваем туры из отелей в плоский список (ТОП-N)
+        flat_tours = self._flatten_tours(tours_result, limit=limit)
         
         # Шаг 6: Получаем статистику
         status = tours_result.get("data", {}).get("status", {})
@@ -310,11 +412,12 @@ class TourVisorClient:
             "status": {
                 "hotels_found": status.get("hotelsfound", 0),
                 "tours_found": status.get("toursfound", 0),
+                "tours_shown": len(flat_tours),  # 🆕 Сколько показываем
                 "min_price": status.get("minprice", 0),
                 "state": status.get("state", "unknown")
             },
-            "tours": flat_tours,           # 🆕 Плоский список туров (рекомендуется для показа)
-            "hotels": tours_result         # Оригинальная структура (сгруппировано по отелям)
+            "tours": flat_tours,           # 🆕 ТОП-10 туров (или limit)
+            "hotels": tours_result         # Оригинальная структура
         }
     
     async def actualize_tour(self, tourid: str, currency: int = 0) -> Dict:
@@ -323,7 +426,17 @@ class TourVisorClient:
             "tourid": tourid,
             "currency": currency
         })
-        return await self._make_request("actualize.php", params)
+        result = await self._make_request("actualize.php", params)
+        
+        # Проверяем на ошибку
+        if result.get("iserror"):
+            return {
+                **result,
+                "tourid": tourid,
+                "note": "Тур может быть устаревшим или недоступным"
+            }
+        
+        return result
     
     async def get_tour_details(self, tourid: str, currency: int = 0) -> Dict:
         """Детальная актуализация (перелеты + доплаты)"""
@@ -331,7 +444,17 @@ class TourVisorClient:
             "tourid": tourid,
             "currency": currency
         })
-        return await self._make_request("actdetail.php", params)
+        result = await self._make_request("actdetail.php", params)
+        
+        # Проверяем на ошибку
+        if result.get("iserror"):
+            return {
+                **result,
+                "tourid": tourid,
+                "note": "Не удалось получить детали. Тур может быть устаревшим или недоступным"
+            }
+        
+        return result
     
     async def get_hotel_info(self, hotelcode: int, reviews: int = 0, imgbig: int = 1) -> Dict:
         """Информация об отеле"""
@@ -340,9 +463,28 @@ class TourVisorClient:
             "reviews": reviews,
             "imgbig": imgbig
         })
-        return await self._make_request("hotel.php", params)
+        result = await self._make_request("hotel.php", params)
+        
+        # Проверяем на ошибку
+        if result.get("iserror"):
+            return {
+                **result,
+                "hotelcode": hotelcode,
+                "note": "Не удалось получить информацию об отеле"
+            }
+        
+        return result
     
     async def get_hot_tours(self, params: Dict) -> Dict:
         """Горящие туры"""
         clean_params = self._convert_params(params)
-        return await self._make_request("hottours.php", clean_params)
+        result = await self._make_request("hottours.php", clean_params)
+        
+        # Проверяем на ошибку
+        if result.get("iserror"):
+            return {
+                **result,
+                "note": "Не удалось получить горящие туры"
+            }
+        
+        return result
