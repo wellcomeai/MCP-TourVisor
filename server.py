@@ -5,12 +5,6 @@ from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 import json
 from tourvisor import TourVisorClient
-from models import (
-    SearchToursRequest, 
-    ActualizeTourRequest, 
-    GetHotToursRequest,
-    GetHotelInfoRequest
-)
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -68,6 +62,8 @@ async def root():
         "status": "ok",
         "message": "TourVisor API работает!",
         "endpoints": [
+            "/find_city",
+            "/find_country",
             "/get_references",
             "/search_tours",
             "/actualize_tour",
@@ -76,6 +72,50 @@ async def root():
             "/get_hot_tours"
         ]
     }
+
+# ==== НОВЫЕ ENDPOINTS ДЛЯ ПОИСКА ====
+
+@app.post("/find_city")
+async def find_city(request: Request):
+    """
+    Найти город по названию
+    Возвращает код города для использования в поиске
+    """
+    try:
+        data = await extract_params(request)
+        
+        city_name = data.get("city_name") or data.get("name")
+        if not city_name:
+            raise HTTPException(status_code=400, detail="city_name is required")
+        
+        result = await client.find_city(city_name)
+        return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/find_country")
+async def find_country(request: Request):
+    """
+    Найти страну по названию
+    Возвращает код страны для использования в поиске
+    """
+    try:
+        data = await extract_params(request)
+        
+        country_name = data.get("country_name") or data.get("name")
+        if not country_name:
+            raise HTTPException(status_code=400, detail="country_name is required")
+        
+        result = await client.find_country(country_name)
+        return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==== СУЩЕСТВУЮЩИЕ ENDPOINTS ====
 
 # GET версия (для curl и браузера)
 @app.get("/get_references")
