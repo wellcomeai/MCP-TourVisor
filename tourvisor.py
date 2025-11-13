@@ -148,6 +148,52 @@ class TourVisorClient:
         }
         return await self._make_request("result.php", result_params)
     
+    async def search_tours_smart(self, city_name: str, country_name: str, params: Dict) -> Dict:
+        """
+        Умный поиск: находит коды города и страны, затем ищет туры
+        Всё в одном запросе!
+        """
+        # Шаг 1: Находим город
+        city_result = await self.find_city(city_name)
+        if not city_result.get("found"):
+            return {
+                "error": "city_not_found",
+                "message": f"Город '{city_name}' не найден",
+                "city_search": city_result
+            }
+        
+        city_id = city_result["city"]["id"]
+        
+        # Шаг 2: Находим страну
+        country_result = await self.find_country(country_name)
+        if not country_result.get("found"):
+            return {
+                "error": "country_not_found",
+                "message": f"Страна '{country_name}' не найдена",
+                "country_search": country_result
+            }
+        
+        country_id = country_result["country"]["id"]
+        
+        # Шаг 3: Добавляем коды к параметрам
+        search_params = {
+            "departure": city_id,
+            "country": country_id,
+            **params
+        }
+        
+        # Шаг 4: Ищем туры
+        tours_result = await self.search_tours(search_params)
+        
+        # Шаг 5: Возвращаем всё вместе
+        return {
+            "success": True,
+            "city": city_result["city"],
+            "country": country_result["country"],
+            "search_params": search_params,
+            "tours": tours_result
+        }
+    
     async def actualize_tour(self, tourid: str, currency: int = 0) -> Dict:
         """Актуализация тура (проверка цены)"""
         params = {
