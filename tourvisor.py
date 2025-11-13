@@ -10,12 +10,14 @@ class TourVisorClient:
         
     async def _make_request(self, endpoint: str, params: Dict[str, Any]) -> Dict:
         """Базовый метод для запросов"""
-        params["authlogin"] = self.login
-        params["authpass"] = self.password
-        params["format"] = "json"
+        # Создаем КОПИЮ params чтобы не модифицировать оригинал
+        request_params = params.copy()
+        request_params["authlogin"] = self.login
+        request_params["authpass"] = self.password
+        request_params["format"] = "json"
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(f"{self.base_url}/{endpoint}", params=params)
+            response = await client.get(f"{self.base_url}/{endpoint}", params=request_params)
             response.raise_for_status()
             return response.json()
     
@@ -26,12 +28,8 @@ class TourVisorClient:
     
     async def find_city(self, city_name: str) -> Dict:
         """Найти город по названию"""
-        # Получаем все города
         all_cities = await self.get_references("departure")
-        
-        # Ищем нужный город (регистронезависимо)
         city_name_lower = city_name.lower().strip()
-        
         departures = all_cities.get("lists", {}).get("departures", {}).get("departure", [])
         
         # Поиск по точному совпадению
@@ -59,8 +57,8 @@ class TourVisorClient:
         if matches:
             return {
                 "found": True,
-                "city": matches[0],  # Берем первое совпадение
-                "alternatives": matches[1:5] if len(matches) > 1 else []  # До 4 альтернатив
+                "city": matches[0],
+                "alternatives": matches[1:5] if len(matches) > 1 else []
             }
         
         return {
@@ -71,11 +69,8 @@ class TourVisorClient:
     
     async def find_country(self, country_name: str) -> Dict:
         """Найти страну по названию"""
-        # Получаем все страны
         all_countries = await self.get_references("country")
-        
         country_name_lower = country_name.lower().strip()
-        
         countries = all_countries.get("lists", {}).get("countries", {}).get("country", [])
         
         # Поиск по точному совпадению
@@ -110,14 +105,50 @@ class TourVisorClient:
             "message": f"Страна '{country_name}' не найдена"
         }
     
+    def _convert_params(self, params: Dict) -> Dict:
+        """Конвертирует строковые параметры в правильные типы"""
+        converted = {}
+        
+        # Числовые параметры
+        int_params = [
+            'departure', 'country', 'adults', 'child', 
+            'childage1', 'childage2', 'childage3',
+            'nightsfrom', 'nightsto', 'stars', 'rating',
+            'pricefrom', 'priceto', 'currency', 'hotelcode',
+            'tourid', 'city', 'items', 'maxdays'
+        ]
+        
+        for key, value in params.items():
+            if key in int_params and value is not None:
+                try:
+                    converted[key] = int(value)
+                except (ValueError, TypeError):
+                    converted[key] = value
+            else:
+                converted[key] = value
+        
+        return converted
+    
     async def search_tours(self, params: Dict) -> Dict:
         """Поиск туров (асинхронный)"""
+        # Конвертируем параметры
+        clean_params = self._convert_params(params)
+        
         # Шаг 1: Создаем запрос
-        search_response = await self._make_request("search.php", params)
+        search_response = await self._make_request("search.php", clean_params)
+        
+        # Проверяем на ошибки
+        if "error" in search_response:
+            return {"error": search_response.get("error"), "details": search_response}
+        
         request_id = search_response.get("requestid")
         
         if not request_id:
-            return {"error": "Не получен ID запроса"}
+            return {
+                "error": "Не получен ID запроса",
+                "api_response": search_response,
+                "sent_params": clean_params
+            }
         
         # Шаг 2: Ждем результаты
         max_attempts = 10
@@ -149,10 +180,7 @@ class TourVisorClient:
         return await self._make_request("result.php", result_params)
     
     async def search_tours_smart(self, city_name: str, country_name: str, params: Dict) -> Dict:
-        """
-        Умный поиск: находит коды города и страны, затем ищет туры
-        Всё в одном запросе!
-        """
+        """Умный поиск: находит коды города и страны, затем ищет туры"""
         # Шаг 1: Находим город
         city_result = await self.find_city(city_name)
         if not city_result.get("found"):
@@ -196,29 +224,30 @@ class TourVisorClient:
     
     async def actualize_tour(self, tourid: str, currency: int = 0) -> Dict:
         """Актуализация тура (проверка цены)"""
-        params = {
+        params = self._convert_params({
             "tourid": tourid,
             "currency": currency
-        }
+        })
         return await self._make_request("actualize.php", params)
     
     async def get_tour_details(self, tourid: str, currency: int = 0) -> Dict:
         """Детальная актуализация (перелеты + доплаты)"""
-        params = {
+        params = self._convert_params({
             "tourid": tourid,
             "currency": currency
-        }
+        })
         return await self._make_request("actdetail.php", params)
     
     async def get_hotel_info(self, hotelcode: int, reviews: int = 0, imgbig: int = 1) -> Dict:
         """Информация об отеле"""
-        params = {
+        params = self._convert_params({
             "hotelcode": hotelcode,
             "reviews": reviews,
             "imgbig": imgbig
-        }
+        })
         return await self._make_request("hotel.php", params)
     
     async def get_hot_tours(self, params: Dict) -> Dict:
         """Горящие туры"""
-        return await self._make_request("hottours.php", params)
+        clean_params = self._convert_params(params)
+        return await self._make_request("hottours.php", clean_params)
