@@ -1,6 +1,6 @@
 import httpx
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 class TourVisorClient:
     def __init__(self, login: str, password: str):
@@ -129,6 +129,87 @@ class TourVisorClient:
         
         return converted
     
+    def _flatten_tours(self, search_result: Dict) -> List[Dict]:
+        """Разворачивает туры из структуры hotels в плоский список"""
+        flat_tours = []
+        
+        # Проверяем наличие данных
+        hotels = search_result.get("data", {}).get("result", {}).get("hotel", [])
+        
+        # Если hotels не список, а словарь (один отель), делаем список
+        if isinstance(hotels, dict):
+            hotels = [hotels]
+        
+        for hotel in hotels:
+            # Информация об отеле
+            hotel_info = {
+                "hotelcode": hotel.get("hotelcode"),
+                "hotelname": hotel.get("hotelname"),
+                "hotelstars": hotel.get("hotelstars"),
+                "hotelrating": hotel.get("hotelrating"),
+                "regionname": hotel.get("regionname"),
+                "regioncode": hotel.get("regioncode"),
+                "countryname": hotel.get("countryname"),
+                "countrycode": hotel.get("countrycode"),
+                "hoteldescription": hotel.get("hoteldescription"),
+                "picturelink": hotel.get("picturelink"),
+                "fulldesclink": hotel.get("fulldesclink"),
+                "reviewlink": hotel.get("reviewlink"),
+                "seadistance": hotel.get("seadistance"),
+                "isphoto": hotel.get("isphoto"),
+                "iscoords": hotel.get("iscoords"),
+                "isdescription": hotel.get("isdescription"),
+                "isreviews": hotel.get("isreviews")
+            }
+            
+            # Получаем туры для этого отеля
+            tours_data = hotel.get("tours", {})
+            
+            # tours может быть словарем с ключом "tour" или сразу списком
+            if isinstance(tours_data, dict):
+                tours_list = tours_data.get("tour", [])
+            else:
+                tours_list = tours_data
+            
+            # Если один тур - делаем список
+            if isinstance(tours_list, dict):
+                tours_list = [tours_list]
+            
+            # Разворачиваем все туры из этого отеля
+            for tour in tours_list:
+                flat_tour = {
+                    **hotel_info,  # Добавляем инфо об отеле
+                    # Информация о туре
+                    "tourid": tour.get("tourid"),
+                    "operatorcode": tour.get("operatorcode"),
+                    "operatorname": tour.get("operatorname"),
+                    "flydate": tour.get("flydate"),
+                    "nights": tour.get("nights"),
+                    "price": tour.get("price"),
+                    "fuelcharge": tour.get("fuelcharge"),
+                    "priceue": tour.get("priceue"),
+                    "placement": tour.get("placement"),
+                    "adults": tour.get("adults"),
+                    "child": tour.get("child"),
+                    "meal": tour.get("meal"),
+                    "mealrussian": tour.get("mealrussian"),
+                    "room": tour.get("room"),
+                    "tourname": tour.get("tourname"),
+                    "currency": tour.get("currency"),
+                    "regular": tour.get("regular"),
+                    "promo": tour.get("promo"),
+                    "onrequest": tour.get("onrequest"),
+                    "flightstatus": tour.get("flightstatus"),
+                    "hotelstatus": tour.get("hotelstatus"),
+                    "nightflight": tour.get("nightflight")
+                }
+                flat_tours.append(flat_tour)
+        
+        # Сортируем по цене (от дешевых к дорогим)
+        flat_tours.sort(key=lambda x: float(x.get("price", 999999)))
+        
+        return flat_tours
+    
     async def search_tours(self, params: Dict) -> Dict:
         """Поиск туров (асинхронный)"""
         # Конвертируем параметры
@@ -176,7 +257,7 @@ class TourVisorClient:
             "requestid": request_id,
             "type": "result",
             "page": 1,
-            "onpage": 10
+            "onpage": 25  # Увеличил до 25 для большего выбора
         }
         return await self._make_request("result.php", result_params)
     
@@ -214,13 +295,26 @@ class TourVisorClient:
         # Шаг 4: Ищем туры
         tours_result = await self.search_tours(search_params)
         
-        # Шаг 5: Возвращаем всё вместе
+        # Шаг 5: Разворачиваем туры из отелей в плоский список
+        flat_tours = self._flatten_tours(tours_result)
+        
+        # Шаг 6: Получаем статистику
+        status = tours_result.get("data", {}).get("status", {})
+        
+        # Шаг 7: Возвращаем всё вместе
         return {
             "success": True,
             "city": city_result["city"],
             "country": country_result["country"],
             "search_params": search_params,
-            "tours": tours_result
+            "status": {
+                "hotels_found": status.get("hotelsfound", 0),
+                "tours_found": status.get("toursfound", 0),
+                "min_price": status.get("minprice", 0),
+                "state": status.get("state", "unknown")
+            },
+            "tours": flat_tours,           # 🆕 Плоский список туров (рекомендуется для показа)
+            "hotels": tours_result         # Оригинальная структура (сгруппировано по отелям)
         }
     
     async def actualize_tour(self, tourid: str, currency: int = 0) -> Dict:
