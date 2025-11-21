@@ -167,6 +167,62 @@ class TourVisorClient:
             "message": f"Страна '{country_name}' не найдена"
         }
     
+    async def find_countries(self, country_names: List[str]) -> Dict:
+        """Найти несколько стран по названиям"""
+        all_countries_response = await self.get_references("country")
+        
+        if all_countries_response.get("iserror"):
+            return {
+                "found": False,
+                "error": "api_error",
+                "message": all_countries_response.get("errormessage", "Ошибка получения списка стран")
+            }
+        
+        countries_data = all_countries_response.get("lists", {}).get("countries", {}).get("country", [])
+        
+        found_countries = []
+        not_found = []
+        
+        for country_name in country_names:
+            country_name_lower = country_name.lower().strip()
+            found = False
+            
+            # Точное совпадение
+            for country in countries_data:
+                if country.get("name", "").lower() == country_name_lower:
+                    found_countries.append({
+                        "id": int(country.get("id")),
+                        "name": country.get("name")
+                    })
+                    found = True
+                    break
+            
+            # Частичное совпадение
+            if not found:
+                for country in countries_data:
+                    if country_name_lower in country.get("name", "").lower():
+                        found_countries.append({
+                            "id": int(country.get("id")),
+                            "name": country.get("name")
+                        })
+                        found = True
+                        break
+            
+            if not found:
+                not_found.append(country_name)
+        
+        if not found_countries:
+            return {
+                "found": False,
+                "message": f"Страны не найдены: {', '.join(not_found)}"
+            }
+        
+        return {
+            "found": True,
+            "countries": found_countries,
+            "not_found": not_found if not_found else None
+        }
+    
     def _convert_params(self, params: Dict) -> Dict:
         """Конвертирует строковые параметры в правильные типы"""
         converted = {}
@@ -396,6 +452,93 @@ class TourVisorClient:
             },
             "tours": flat_tours,
             "hotels": tours_result
+        }
+    
+    async def get_hot_tours_smart(self, city_name: str, countries: Optional[Any] = None, params: Dict = None) -> Dict:
+        """Умный поиск горящих туров: находит коды города и стран
+        
+        Args:
+            city_name: название города на русском
+            countries: название страны, список стран или None для всех стран
+            params: дополнительные параметры (items, maxdays, stars, etc)
+        
+        Returns:
+            Словарь с горящими турами
+        """
+        if params is None:
+            params = {}
+        
+        # Шаг 1: Находим город
+        city_result = await self.find_city(city_name)
+        if not city_result.get("found"):
+            return {
+                "success": False,
+                "error": "city_not_found",
+                "message": f"Город '{city_name}' не найден",
+                "city_search": city_result
+            }
+        
+        city_id = city_result["city"]["id"]
+        
+        # Шаг 2: Обрабатываем страны (если указаны)
+        country_codes = None
+        countries_info = None
+        
+        if countries:
+            # Если строка - делаем список
+            if isinstance(countries, str):
+                countries_list = [c.strip() for c in countries.split(",")]
+            elif isinstance(countries, list):
+                countries_list = countries
+            else:
+                countries_list = [str(countries)]
+            
+            # Находим коды стран
+            countries_result = await self.find_countries(countries_list)
+            
+            if not countries_result.get("found"):
+                return {
+                    "success": False,
+                    "error": "countries_not_found",
+                    "message": f"Страны не найдены: {countries}",
+                    "countries_search": countries_result
+                }
+            
+            countries_info = countries_result["countries"]
+            country_codes = ",".join([str(c["id"]) for c in countries_info])
+        
+        # Шаг 3: Формируем параметры
+        hot_params = {
+            "city": city_id,
+            "items": params.get("items", 10),  # По умолчанию 10
+            **params
+        }
+        
+        if country_codes:
+            hot_params["countries"] = country_codes
+        
+        # Шаг 4: Получаем горящие туры
+        hot_result = await self.get_hot_tours(hot_params)
+        
+        # Проверяем на ошибку
+        if hot_result.get("iserror"):
+            return {
+                "success": False,
+                "error": "api_error",
+                "city": city_result["city"],
+                "countries": countries_info,
+                "hot_params": hot_params,
+                "error_details": hot_result
+            }
+        
+        # Шаг 5: Возвращаем результат
+        return {
+            "success": True,
+            "city": city_result["city"],
+            "countries": countries_info,
+            "hot_params": hot_params,
+            "hotcount": hot_result.get("hotcount", 0),
+            "hottours": hot_result.get("hottours", [])
         }
     
     async def actualize_tour(self, tourid: str, currency: int = 0) -> Dict:
