@@ -63,6 +63,7 @@ async def root():
         "message": "TourVisor API работает!",
         "endpoints": [
             "/search_tours_smart",
+            "/get_hot_tours_smart",
             "/find_city",
             "/find_country",
             "/get_references",
@@ -95,6 +96,37 @@ async def search_tours_smart(request: Request):
         }
         
         result = await client.search_tours_smart(city_name, country_name, search_params)
+        return result
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/get_hot_tours_smart")
+async def get_hot_tours_smart(request: Request):
+    """Умный поиск горящих туров - находит коды и ищет горящие туры"""
+    try:
+        data = await extract_params(request)
+        
+        city_name = data.get("city_name") or data.get("city")
+        
+        if not city_name:
+            raise HTTPException(
+                status_code=400, 
+                detail="city_name is required"
+            )
+        
+        # Опциональные страны (может быть список или одна)
+        countries_param = data.get("countries") or data.get("country_name") or data.get("country")
+        
+        # Остальные параметры
+        hot_params = {
+            k: v for k, v in data.items() 
+            if k not in ["city_name", "city", "countries", "country_name", "country"] and v is not None
+        }
+        
+        result = await client.get_hot_tours_smart(city_name, countries_param, hot_params)
         return result
         
     except json.JSONDecodeError as e:
@@ -261,7 +293,7 @@ async def get_hotel_info(request: Request):
 
 @app.post("/get_hot_tours")
 async def get_hot_tours(request: Request):
-    """Горящие туры"""
+    """Горящие туры (с кодами)"""
     try:
         data = await extract_params(request)
         
