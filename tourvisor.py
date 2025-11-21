@@ -282,11 +282,11 @@ class TourVisorClient:
         # Сортируем по цене (от дешевых к дорогим)
         flat_tours.sort(key=lambda x: float(x.get("price", 999999)))
         
-        # 🆕 Возвращаем только ТОП-N туров
+        # Возвращаем только ТОП-N туров
         return flat_tours[:limit] if limit else flat_tours
     
     async def search_tours(self, params: Dict) -> Dict:
-        """Поиск туров (асинхронный)"""
+        """Поиск туров (асинхронный) - ждём строго 3 секунды"""
         # Конвертируем параметры
         clean_params = self._convert_params(params)
         
@@ -308,32 +308,10 @@ class TourVisorClient:
                 "sent_params": clean_params
             }
         
-        # Шаг 2: Ждем результаты
-        max_attempts = 10
-        attempt = 0
+        # Шаг 2: Ждём СТРОГО 3 секунды (без циклов)
+        await asyncio.sleep(3)
         
-        while attempt < max_attempts:
-            await asyncio.sleep(3 if attempt == 0 else 2)
-            
-            status_params = {
-                "requestid": request_id,
-                "type": "status"
-            }
-            status_response = await self._make_request("result.php", status_params)
-            
-            # Проверяем на ошибку
-            if status_response.get("iserror"):
-                return status_response
-            
-            status = status_response.get("status", {})
-            
-            # Если завершен или прошло >7 сек
-            if status.get("state") == "finished" or status.get("timepassed", 0) > 7:
-                break
-            
-            attempt += 1
-        
-        # Шаг 3: Получаем результаты
+        # Шаг 3: Получаем результаты (то что нашлось за 3 сек)
         result_params = {
             "requestid": request_id,
             "type": "result",
@@ -412,12 +390,12 @@ class TourVisorClient:
             "status": {
                 "hotels_found": status.get("hotelsfound", 0),
                 "tours_found": status.get("toursfound", 0),
-                "tours_shown": len(flat_tours),  # 🆕 Сколько показываем
+                "tours_shown": len(flat_tours),
                 "min_price": status.get("minprice", 0),
                 "state": status.get("state", "unknown")
             },
-            "tours": flat_tours,           # 🆕 ТОП-10 туров (или limit)
-            "hotels": tours_result         # Оригинальная структура
+            "tours": flat_tours,
+            "hotels": tours_result
         }
     
     async def actualize_tour(self, tourid: str, currency: int = 0) -> Dict:
